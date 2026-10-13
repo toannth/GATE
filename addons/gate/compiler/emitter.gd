@@ -400,7 +400,7 @@ func _emit_class(cd: GateAST._ClassDecl) -> void:
 	if cd.is_global and cd.generic_params.is_empty():
 		_emit_global_class(cd)
 		return
-
+	
 	var head: String = "class %s" % cd.name
 	if cd.extends_type != null:
 		head += " extends " + _map_type(cd.extends_type)
@@ -457,42 +457,35 @@ func _emit_global_class(cd: GateAST._ClassDecl) -> void:
 				% cd.name + "Godot's), so @global cannot give it to this class", cd.line, cd.col,
 			"rename the class, or the type argument that produces this name")
 		return
-	var saved_out: PackedStringArray = _out
-	var saved_map: Array[int] = _map
-	var saved_indent: int = _indent
-	var saved_pending: PackedStringArray = _pending
-	var saved_pending_src: Array = _pending_line_src
-	var saved_used_origins: Dictionary = _used_origins
-	var saved_preload_targets: Dictionary = _preload_targets
-	var saved_class: String = _cur_class
-	var saved_base: String = _cur_base
-	var saved_scope: String = _scope_class
-	var saved_types: Dictionary = _var_types.duplicate()
-	var saved_depths: Dictionary = _var_depths.duplicate()
-	var saved_dicts: Dictionary = _var_dict_values.duplicate()
-	var saved_gen: bool = _in_gate_helper
-	var saved_iface_scopes: Array = _iface_scopes
-	var saved_needs_iface: bool = _needs_iface_helper
-
-	_out = []
-	_map = []
-	_indent = 0
-	_pending = PackedStringArray()
-	_pending_line_src = []
-	_used_origins = {}
-	_preload_targets = {}
-	_iface_scopes = []
-	_needs_iface_helper = false
-
-	for hl in HEADER_LINES:
-		_line((hl as String) % source_path if (hl as String).contains("%s") else hl, cd.line)
-	_line("class_name " + cd.name, cd.line)
-	if cd.extends_type != null:
-		_line("extends " + _map_type(cd.extends_type), cd.line)
+	
+	for ca in cd.annotations:
+		_emit_annotation(ca)
+	var can_emit_pass: bool = false
+	if cd.extends_type != null and not cd.extends_type.generic_args.is_empty():
+		if _reg_whole != null:
+			var generic_cd: GateAST._ClassDecl = _reg_whole.generics[cd.extends_type.name]
+			_generics[cd.extends_type.name] = generic_cd
+			_collect_instantiations([cd])
+			
+			var st: GateAST._TypeRef = _substituted(cd.extends_type)
+			var mangled: String = _generic_name(st)
+			var saved_is_global: bool = generic_cd.is_global
+			_instantiations[cd.name] = _instantiations[mangled]
+			_instantiations.erase(mangled)
+			generic_cd.is_global = true
+			_emit_monomorphised()
+			generic_cd.is_global = saved_is_global
+			_instantiations.erase(cd.name)
+	else:
+		can_emit_pass = true
+		_line("class_name " + cd.name, cd.line)
+		if cd.extends_type != null:
+			_line("extends " + _map_type(cd.extends_type), cd.line)
+	
 	_blank_line(cd.line)
 
 	var preload_at: int = _out.size()
-
+	
 	_cur_class = cd.name
 	_cur_base = cd.extends_type.name if cd.extends_type != null else ""
 	# A monomorphised instantiation's fields and methods are indexed under the
@@ -504,58 +497,22 @@ func _emit_global_class(cd: GateAST._ClassDecl) -> void:
 	# `_emit_monomorphised` sets `_mono_scope` to the original key for exactly
 	# this; a plain (non-generic) global class never sets it, so
 	# `_qjoin(saved_scope, cd.name)` is still the fallback.
-	_scope_class = _mono_scope if _mono_scope != "" else _qjoin(saved_scope, cd.name)
+	_scope_class = _mono_scope if _mono_scope != "" else _qjoin(_scope_class, cd.name)
 	_mono_scope = ""
-	_in_gate_helper = saved_gen or _gate_written(cd)
+	_in_gate_helper = _in_gate_helper or _gate_written(cd)
 	_emit_interface_marker(cd)
 	_iface_scopes.append(false)
 	var before: int = _out.size()
 	for m in cd.members:
 		_emit_member(m)
+		_blank_line(cd.line)
 	_close_class_scope()
 	if _init_helper_scopes.has(_scope_class):
 		_emit_init_helper(0)
-	if not _emitted_code_since(before):
+	if can_emit_pass and not _emitted_code_since(before):
 		_line("pass", cd.line)
 	if _needs_iface_helper:
 		_emit_iface_helper()
-
-	var pl: Array = _preload_lines()
-	if not pl.is_empty():
-		pl.append("")
-		for i in range(pl.size() - 1, -1, -1):
-			_out.insert(preload_at, pl[i])
-			_map.insert(preload_at, cd.line)
-
-	while _out.size() > 0 and String(_out[_out.size() - 1]).strip_edges() == "":
-		_out.remove_at(_out.size() - 1)
-		if _map.size() > _out.size():
-			_map.remove_at(_map.size() - 1)
-
-	_extra_outputs.append({
-		"path": source_path.get_basename() + "." + cd.name + ".gd",
-		"class_name": cd.name,
-		"source": "\n".join(_out) + "\n",
-		"map": _map,
-		"deps": _preload_targets.keys(),
-	})
-
-	_out = saved_out
-	_map = saved_map
-	_indent = saved_indent
-	_pending = saved_pending
-	_pending_line_src = saved_pending_src
-	_used_origins = saved_used_origins
-	_preload_targets = saved_preload_targets
-	_cur_class = saved_class
-	_cur_base = saved_base
-	_scope_class = saved_scope
-	_var_types = saved_types
-	_var_depths = saved_depths
-	_var_dict_values = saved_dicts
-	_in_gate_helper = saved_gen
-	_iface_scopes = saved_iface_scopes
-	_needs_iface_helper = saved_needs_iface
 
 
 func _warn_narrowed(what: String, types: Array, line: int, col: int) -> void:
